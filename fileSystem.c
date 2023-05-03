@@ -379,10 +379,10 @@ int _read(int startBlockIdx, int length, unsigned char *result) {
         }
 
         if (remainingLength > BLOCK_SIZE) {
-            memcpy((char *)result, (char *)readBuffer, BLOCK_SIZE);
+            memcpy((char *)result + (length - remainingLength), (char *)readBuffer, BLOCK_SIZE);
             remainingLength -= BLOCK_SIZE;
         } else {
-            memcpy((char *)result, (char *)readBuffer, remainingLength);
+            memcpy((char *)result + (length - remainingLength), (char *)readBuffer, remainingLength);
             remainingLength -= remainingLength;
         }
 
@@ -397,10 +397,12 @@ int _read(int startBlockIdx, int length, unsigned char *result) {
         return -1;
     }
 
-    printf("READING COMPLETE! :\n");
-    for (int i = 0; i < 64; i++)
-        printf("%c", result[i]);
-    printf("\n");
+    // printf("READING COMPLETE! :\n");
+    // if (startBlockIdx == 9) {
+    //     for (int i = 0; i < 64; i++)
+    //         printf("%c - %i \n", result[i], (int)result[i]);
+    //     printf("\n");
+    // }
 
     // blockRead(2, result);
 
@@ -745,6 +747,7 @@ int _updateDirectorySizes(unsigned char *path, int dirAddr, int dirLength) {
     int sum = dirLength;
 
     if (dirLength > 0) {
+        printf("=== DIR LENGTH IS :: %i", dirLength);
         // Read directory
         unsigned char *data = malloc(dirLength);
         if (_read(dirAddr, dirLength, data) != 0) {
@@ -755,7 +758,7 @@ int _updateDirectorySizes(unsigned char *path, int dirAddr, int dirLength) {
 
         printf("DATA:\n");
         for (int i = 0; i < 64; i++)
-            printf("%c", data[i]);
+            printf("%c - %i\n", data[i], (int)data[i]);
 
         // Parse & search
         for (int i = 0; i < dirLength; i += 12) {
