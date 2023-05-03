@@ -10,6 +10,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "device.h"
 #include "fileSystem.h"
@@ -23,6 +24,25 @@ int file_errno = 0;
 /* Index for the block containing the root directory file */
 int root_block_idx;
 
+struct BlockEntry {
+    int idx;
+    int value;
+};
+
+struct DirectoryEntry {
+    int startBlockIdx;
+    int filesize;
+    int dirFileOffset;
+};
+
+void resetBlocks() {
+    printf("RESETTING BLOCKS");
+    unsigned char buffer[64] = "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO";
+    for (int i = 0; i < numBlocks(); i++) {
+        blockWrite(i, buffer);
+    }
+}
+
 /**
  * @brief Returns 1 if a given device is formatted in WFS. Otherwise, return 0.
  * Returns -1 on error.
@@ -33,7 +53,7 @@ int root_block_idx;
  * @return int
  */
 int isFormatted() {
-    char data[64];
+    unsigned char data[64];
 
     if (blockRead(1, data) == -1) {
         file_errno = EBADDEV;
@@ -49,30 +69,15 @@ int isFormatted() {
  *
  * @return decoded integer or -1 if error.
  */
-int _getDecoded(char c1, char c0) {
-    int result = (unsigned char)c1 * 256 + (unsigned char)c0 - 1;
+int _getDecoded(unsigned char c1, unsigned char c0) {
+    int result = (unsigned char)c1 * 256 + (unsigned char)c0;
 
-    if (result < 0 || result > 65534) {
+    if (result < 0 || result > 65535) {
         file_errno = EOTHER;
         return -1;
     }
 
     return result;
-}
-
-int _getRootSize() {
-    if (isFormatted() != 0) {
-        file_errno = EOTHER;
-        return -1;
-    }
-
-    char buffer[64];
-    if (blockRead(1, buffer) == -1) {
-        file_errno = EBADDEV;
-        return -1;
-    }
-
-    return _getDecoded(buffer[3], buffer[4]);
 }
 
 /**
@@ -84,121 +89,64 @@ int _getRootSize() {
  *
  * @return 0 if successful, -1 if error.
  */
-int _encode(int n, char *result) {
-    if (n < 0 || n > 65534) {
+int _encode(int n, unsigned char *result) {
+    if (n < 0 || n > 65535) {
         file_errno = EOTHER;
         return -1;
     }
 
-    n++; // Avoid null terminator
-
-    result[0] = n % 256;
-    result[1] = (int)(n - n % 256) / 256;
+    result[0] = (n % 256);
+    result[1] = (int)((n - (n % 256)) / 256);
 
     return 0;
 }
 
-/*
- * Formats the device for use by this file system.
- * The volume name must be < 64 bytes long.
- * All information previously on the device is lost.
- * Also creates the root directory "/".
- * Returns 0 if no problem or -1 if the call failed.
- */
-int format(char *volumeName) {
-    // Check block number validity - atleast one block must be free after formatting to be considered 'valid'
-    int reserved_blocks = 1 + ceil((5 + numBlocks() * 2) / BLOCK_SIZE);
-    if ((reserved_blocks - numBlocks()) <= 0) {
-        file_errno = ENOROOM;
-        return -1;
+int _getRootSize() {
+    if (isFormatted() != 1) {
+        file_errno = EOTHER;
+        return -5;
     }
 
-    // Check volume name validiity
-    if (strlen(volumeName) > (BLOCK_SIZE - 1)) {
-        file_errno = EBADVOLNAME;
-        return -1;
-    }
-
-    // Set volume name to first block
     unsigned char buffer[64];
-    strncpy(buffer, volumeName, 64);
+    if (blockRead(1, buffer) == -1) {
+        file_errno = EBADDEV;
+        return -2;
+    }
+    printf("Getting root size: %i\n", _getDecoded(buffer[3], buffer[4]));
+    return _getDecoded(buffer[3], buffer[4]);
+}
 
-    if (blockWrite(0, buffer) == -1) {
+int _setRootSize(int size) {
+    printf("Setting root size: %i\n", size);
+    unsigned char buffer[64];
+    if (blockRead(1, buffer) == -1) {
         file_errno = EBADDEV;
         return -1;
     }
 
-    buffer[0] = '\0'; // Clear buffer
-    root_block_idx = reserved_blocks; // index of root = last_reserved_block_idx - 1 | Equiv. to count of reserved blocks
+    unsigned char encoded[2];
+    _encode(size, encoded);
 
-    // Assign WFS header (used to quickly check if a device has been formatted before)
-    buffer[0] = 'W';
-    buffer[1] = 'F';
-    buffer[2] = 'S';
+    buffer[3] = encoded[1];
+    buffer[4] = encoded[0];
 
-    // Initialise root directory size to 0 (1 maps to 0 when encoded)
-    buffer[3] = (char)1;
-    buffer[4] = (char)1;
-
-    /**
-     * Create FAT - every 2 characters represents both an 'allocated' flag and the next block value in linked list. 
-     * 
-     * ==============
-     *    ENCODING
-     * --------------
-     * ALL VALUES INCLUSIVE.
-     *
-     * 0           :    -    : INVALID VALUE (NOTHING POINTS TO VOLUME NAME AS NEXT) 
-     * 1-65533     : 0-65532 : NEXT BLOCK INDEX
-     * 65534       :  65533  : UNALLOCATED BLOCK
-     * 65535       :  65534  : END OF FILE
-     * ==============
-    */
-    for (int i = 0; i < numBlocks(); i++) {
-        struct BlockEntry entry = {i, UNALLOCATED};
-        char encoded[2];
-
-        // Set to allocated if it is a reserved block or the root (i.e. last reserved block idx + 1).
-        if (i <= reserved_blocks) {
-            entry.value = END_OF_FILE;
-        }
-        
-        setBlockEntry(entry);
-    }
-
-    return 0;
-}
-
-/*
- * Returns the volume's name in the result.
- * Returns 0 if no problem or -1 if the call failed.
- */
-int volumeName(char *result) {
-    if (isFormatted() != 0) {
-        file_errno = EOTHER;
-        return -1;
-    }
-
-    if (blockRead(1, result) == -1) {
+    if (blockWrite(1, buffer)) {
         file_errno = EBADDEV;
         return -1;
     }
 
     return 0;
 }
-
-struct BlockEntry {
-    int idx;
-    int value;
-};
 
 int _loadFAT(unsigned char *fat) {
+    fat[0] = '\0';
+
     // Read FAT
     int fatLength = 5 + numBlocks() * 2;
     int remainingLength = fatLength;
     while (remainingLength > 0) {
         // Read block
-        char readBuffer[BLOCK_SIZE];
+        unsigned char readBuffer[BLOCK_SIZE] = {'\0'};
         if (blockRead(1, readBuffer) == -1) {
             file_errno = EBADDEV;
             return -1;
@@ -207,20 +155,20 @@ int _loadFAT(unsigned char *fat) {
         // Get rid of FS header & root size
         if (remainingLength == fatLength) {
             if (remainingLength > BLOCK_SIZE) {
-                strncat(fat, readBuffer, BLOCK_SIZE - 5);
+                memcpy((char *)fat, (char *)(readBuffer + 4), BLOCK_SIZE - 5);
                 remainingLength -= BLOCK_SIZE;
             } else {
-                strncat(fat, readBuffer, remainingLength - 5);
+                memcpy((char *)fat, (char *)(readBuffer + 4), remainingLength - 5);
                 remainingLength -= remainingLength;
             }
         }
 
         // Do others normally.
         if (remainingLength > BLOCK_SIZE) {
-            strncat(fat, readBuffer, BLOCK_SIZE);
+            memcpy((char *)fat, (char *)readBuffer, BLOCK_SIZE);
             remainingLength -= BLOCK_SIZE;
         } else {
-            strncat(fat, readBuffer, remainingLength);
+            memcpy((char *)fat, (char *)readBuffer, remainingLength);
             remainingLength -= remainingLength;
         }
     }
@@ -230,16 +178,18 @@ int _loadFAT(unsigned char *fat) {
 
 struct BlockEntry getBlockEntry(int block) {
     struct BlockEntry entry = {-1, -1};
-    char c1, c0;
+    unsigned char c1, c0;
 
-    int c1_block = (4+2*(entry.idx))/BLOCK_SIZE + 1;
-    int c1_offset = (4+2*(entry.idx)) % BLOCK_SIZE;
+    int c1_block = (5 + 2 * (block)) / BLOCK_SIZE + 1;
+    int c1_offset = (5 + 2 * (block)) % BLOCK_SIZE;
 
-    int c0_block = (5+2*(entry.idx))/BLOCK_SIZE + 1;
-    int c0_offset = (5+2*(entry.idx)) % BLOCK_SIZE;
+    int c0_block = (6 + 2 * (block)) / BLOCK_SIZE + 1;
+    int c0_offset = (6 + 2 * (block)) % BLOCK_SIZE;
+
+    // printf("Entry for block %i: %i %i %i %i \n", block, c1_block, c1_offset, c0_block, c0_offset);
 
     // Read C1
-    char readBuffer[BLOCK_SIZE];
+    unsigned char readBuffer[BLOCK_SIZE];
     if (blockRead(c1_block, readBuffer) == -1) {
         file_errno = EBADDEV;
         return entry;
@@ -258,30 +208,32 @@ struct BlockEntry getBlockEntry(int block) {
     }
 
     entry.idx = block;
-    entry.value = _getDecoded(2 * block, 2 * block + 1);
+    entry.value = _getDecoded(c1, c0);
 
     return entry;
 }
 
 int setBlockEntry(struct BlockEntry entry) {
     // Determine block to change
-    int c1_block = (4+2*(entry.idx))/BLOCK_SIZE + 1;
-    int c1_offset = (4+2*(entry.idx)) % BLOCK_SIZE;
+    int c1_block = (5 + 2 * (entry.idx)) / BLOCK_SIZE + 1;
+    int c1_offset = (5 + 2 * (entry.idx)) % BLOCK_SIZE;
 
-    int c0_block = (5+2*(entry.idx))/BLOCK_SIZE + 1;
-    int c0_offset = (5+2*(entry.idx)) % BLOCK_SIZE;
+    int c0_block = (6 + 2 * (entry.idx)) / BLOCK_SIZE + 1;
+    int c0_offset = (6 + 2 * (entry.idx)) % BLOCK_SIZE;
 
-    char encoded[2];
+    // printf("Entry for block %i: %i %i %i %i \n", entry.idx, c1_block, c1_offset, c0_block, c0_offset);
+
+    unsigned char encoded[2];
     _encode(entry.value, encoded);
 
     // Modify C1
-    char readBuffer[BLOCK_SIZE];
+    unsigned char readBuffer[BLOCK_SIZE];
     if (blockRead(c1_block, readBuffer) == -1) {
         file_errno = EBADDEV;
         return -1;
     }
     readBuffer[c1_offset] = encoded[1];
-    
+
     // Maybe modify c0 as well.
     if (c1_block == c0_block) {
         readBuffer[c0_offset] = encoded[0];
@@ -309,6 +261,99 @@ int setBlockEntry(struct BlockEntry entry) {
     return 0;
 }
 
+/*
+ * Formats the device for use by this file system.
+ * The volume name must be < 64 bytes long.
+ * All information previously on the device is lost.
+ * Also creates the root directory "/".
+ * Returns 0 if no problem or -1 if the call failed.
+ */
+int format(char *volumeName) {
+    resetBlocks();
+    // Check block number validity - atleast one block must be free after formatting to be considered 'valid'
+    int reserved_blocks = 1 + ((5 + numBlocks() * 2 + (BLOCK_SIZE - 1)) / BLOCK_SIZE); // always round up
+    if ((numBlocks() - reserved_blocks) <= 0) {
+        file_errno = ENOROOM;
+        return -1;
+    }
+
+    // Check volume name validiity
+    if (strlen(volumeName) > (BLOCK_SIZE - 1)) {
+        file_errno = EBADVOLNAME;
+        return -1;
+    }
+
+    // Set volume name to first block
+    unsigned char buffer[64];
+    strncpy((char *)buffer, volumeName, 64);
+
+    if (blockWrite(0, buffer) == -1) {
+        file_errno = EBADDEV;
+        return -1;
+    }
+
+    root_block_idx = reserved_blocks; // index of root = last_reserved_block_idx - 1 | Equiv. to count of reserved blocks
+
+    // Assign WFS header (used to quickly check if a device has been formatted before)
+    buffer[0] = 'W';
+    buffer[1] = 'F';
+    buffer[2] = 'S';
+
+    // Initialise root directory size to 0
+    buffer[3] = (unsigned char)0;
+    buffer[4] = (unsigned char)0;
+
+    if (blockWrite(1, buffer) == -1) {
+        file_errno = EBADDEV;
+        return -1;
+    }
+
+    /**
+     * Create FAT - every 2 characters represents both an 'allocated' flag and the next block value in linked list.
+     *
+     * ==============
+     *    ENCODING
+     * --------------
+     * ALL VALUES INCLUSIVE.
+     *
+     * 0           :    -    : INVALID VALUE (NOTHING POINTS TO VOLUME NAME AS NEXT)
+     * 1-65533     : 0-65532 : NEXT BLOCK INDEX
+     * 65534       :  65533  : UNALLOCATED BLOCK
+     * 65535       :  65534  : END OF FILE
+     * ==============
+     */
+    for (int i = 0; i < numBlocks(); i++) {
+        struct BlockEntry entry = {i, UNALLOCATED};
+
+        // Set to allocated if it is a reserved block or the root (i.e. last reserved block idx + 1).
+        if (i <= reserved_blocks) {
+            entry.value = END_OF_FILE;
+        }
+
+        setBlockEntry(entry);
+    }
+
+    return 0;
+}
+
+/*
+ * Returns the volume's name in the result.
+ * Returns 0 if no problem or -1 if the call failed.
+ */
+int volumeName(char *result) {
+    if (isFormatted() != 1) {
+        file_errno = EOTHER;
+        return -1;
+    }
+
+    if (blockRead(0, (unsigned char *)result) == -1) {
+        file_errno = EBADDEV;
+        return -1;
+    }
+
+    return 0;
+}
+
 /**
  * @brief Reads a specified amount of data starting at the specified block.
  *
@@ -317,23 +362,27 @@ int setBlockEntry(struct BlockEntry entry) {
  * @param result
  * @return int 0 for success, -1 for error.
  */
-int _read(int startBlockIdx, int length, void *result) {
+int _read(int startBlockIdx, int length, unsigned char *result) {
+    printf("READING FROM %i for length %i\n", startBlockIdx, length);
+    result[0] = '\0';
+
     int remainingLength = length;
     int blockIdx = startBlockIdx;
 
     do {
+        printf("Reading block %i. Remaining: %i\n", blockIdx, remainingLength);
         // Read block
-        char readBuffer[BLOCK_SIZE];
+        unsigned char readBuffer[BLOCK_SIZE] = {'\0'};
         if (blockRead(blockIdx, readBuffer) == -1) {
             file_errno = EBADDEV;
             return -1;
         }
 
         if (remainingLength > BLOCK_SIZE) {
-            strncat(result, readBuffer, BLOCK_SIZE);
+            memcpy((char *)result, (char *)readBuffer, BLOCK_SIZE);
             remainingLength -= BLOCK_SIZE;
         } else {
-            strncat(result, readBuffer, remainingLength);
+            memcpy((char *)result, (char *)readBuffer, remainingLength);
             remainingLength -= remainingLength;
         }
 
@@ -343,24 +392,46 @@ int _read(int startBlockIdx, int length, void *result) {
     } while (blockIdx != END_OF_FILE && blockIdx != UNALLOCATED);
 
     if (remainingLength != 0) {
+        printf("ERRO! Remaining length: %i\n", remainingLength);
         file_errno = EOTHER;
         return -1;
     }
+
+    printf("READING COMPLETE! :\n");
+    for (int i = 0; i < 64; i++)
+        printf("%c", result[i]);
+    printf("\n");
+
+    // blockRead(2, result);
+
+    // printf("READING COMPLETE!\n");
+    // for (int i = 0; i < 64; i++)
+    //     printf("%c - %i \n", result[i], (int)result[i]);
+    // printf("\n");
+
+    return 0;
 }
 
 int _allocateNewBlock(int lastBlockIdx, int *newBlockIdx) {
     // Search for free block
-    unsigned char fat = malloc(2*numBlocks());
+    unsigned char *fat = malloc(2 * numBlocks() + 1);
     *newBlockIdx = -1;
-    _loadFAT(fat);
+    if (_loadFAT(fat) != 0) {
+        file_errno = EOTHER;
+        free(fat);
+        return -1;
+    }
 
     for (int i = 0; i < numBlocks(); i++) {
+
         struct BlockEntry entry = getBlockEntry(i);
+        printf("ITERATING BLOCK: %i. UNALLOCATED = %i\n", i, entry.value == UNALLOCATED);
 
         if (entry.value == UNALLOCATED) {
             // Set new block -> END_OF_FILE
             entry.value = END_OF_FILE;
             if (setBlockEntry(entry) != 0) {
+                free(fat);
                 return -1;
             }
 
@@ -370,21 +441,24 @@ int _allocateNewBlock(int lastBlockIdx, int *newBlockIdx) {
                 // Set last block - > new block
                 struct BlockEntry updatedLastBlockEntry = {lastBlockIdx, entry.idx};
                 if (setBlockEntry(updatedLastBlockEntry) != 0) {
+                    free(fat);
                     return -1;
                 }
             }
+
+            printf("Allocated new block: %i\n", *newBlockIdx);
+            free(fat);
+            return 0;
         }
     }
 
-    if (*newBlockIdx > 0) {
-        return 0;
-    } else {
-        file_errno = ENOROOM;
-        return -1;
-    }
+    free(fat);
+    file_errno = ENOROOM;
+    return -1;
 }
 
-int _append(int startBlockIdx, int currentLength, unsigned char *rawData, int dataLength) {
+int _append(int startBlockIdx, int currentLength, unsigned char *data, int dataLength) {
+    printf("Appending %s to file starting at %i\n", data, startBlockIdx);
     // Traverse to last block
     int blockIdx = startBlockIdx;
     while (getBlockEntry(blockIdx).value != END_OF_FILE) {
@@ -396,27 +470,35 @@ int _append(int startBlockIdx, int currentLength, unsigned char *rawData, int da
         file_errno = EBADDEV;
         return -1;
     }
+    printf("READ block:\n");
+    for (int i = 0; i < 64; i++)
+        printf("%c", data[i]);
+    printf("\n");
 
     // Ensure there is a null terminator at the end of data
-    unsigned char *data;
-    if (rawData[dataLength-1] != '\0') {
-        data = malloc(dataLength + 1);
-        strncpy(data, rawData, dataLength);
-        data[dataLength] = '\0';
+    // unsigned char *data;
+    // if (rawData[dataLength - 1] != '\0') {
+    //     data = malloc(dataLength + 1);
+    //     strncpy((char *)data, (char *)rawData, dataLength);
+    //     data[dataLength] = '\0';
 
-        dataLength++;
+    //     dataLength++;
 
-    } else {
-        data = malloc(dataLength); 
-        strncpy(data, rawData, dataLength);
-    }
+    // } else {
+    // data = malloc(dataLength);
+    // strncpy((char *)data, (char *)rawData, dataLength);
+    // }
 
     // Start appending
-    int bufferPos = currentLength % BLOCK_SIZE - 1;  // We want to overwrite the prev. null terminator
+    int bufferPos = currentLength % BLOCK_SIZE;
     int dataPos = 0;
     while (dataPos < dataLength) {
         // Check if block is full
         if (bufferPos > BLOCK_SIZE - 1) {
+            printf("Writing block:\n");
+            for (int i = 0; i < 64; i++)
+                printf("%c", data[i]);
+            printf("\n");
             // Commit current block
             if (blockWrite(blockIdx, buffer)) {
                 file_errno = EBADDEV;
@@ -428,26 +510,31 @@ int _append(int startBlockIdx, int currentLength, unsigned char *rawData, int da
             if (_allocateNewBlock(blockIdx, &newBlockIdx) != 0) {
                 return -1;
             }
+            blockIdx = newBlockIdx;
+            bufferPos = 0;
         }
 
+        printf("Set block pos %i to data pos %i (%c - %i)\n", bufferPos, dataPos, data[dataPos], (int)data[dataPos]);
         buffer[bufferPos] = data[dataPos];
         dataPos++;
+        bufferPos++;
     }
 
+    printf("TEST: %i\n", buffer[28] == 'C');
+
     // Commit last block
+    printf("Writing block:\n");
+    for (int i = 0; i < 64; i++)
+        printf("%c", data[i]);
+    printf("\n");
     if (blockWrite(blockIdx, buffer)) {
+        printf("BLOCK WRITE FAILED");
         file_errno = EBADDEV;
         return -1;
     }
 
     return 0;
 }
-
-struct DirectoryEntry {
-    int startBlockIdx;
-    int filesize;
-    int dirFileOffset;
-};
 
 /**
  * @brief Get the DirectoryEntry from given directory file data
@@ -458,20 +545,21 @@ struct DirectoryEntry {
  * @return DirectoryEntry struct with all values -1 if not found, block index (address) and its length otherwise.
  */
 struct DirectoryEntry
-_getAddressFromDirectoryFile(char *cwdData, int cwdLength, char *targetName, char type) {
+_getAddressFromDirectoryFile(unsigned char *cwdData, int cwdLength, unsigned char *targetName, char type) {
     // Get target
     char target[9];
-    strncpy(target, targetName, 7);
+    strncpy(target, (char *)targetName, 7);
     target[7] = type;
     target[8] = '\0';
 
     // Parse & search
-    struct DirectoryEntry addr = {-1, -1};
+    struct DirectoryEntry addr = {-1, -1, -1};
     for (int i = 0; i < cwdLength; i += 12) {
-        if (strncmp(target, cwdData + i, 8) == 0) {
+        if (strncmp(target, (char *)cwdData + i, 8) == 0) {
             // Found target file/directory - return addr
             addr.startBlockIdx = _getDecoded(cwdData[i + 8], cwdData[i + 9]);
-            addr.length = _getDecoded(cwdData[i + 10], cwdData[i + 11]);
+            addr.filesize = _getDecoded(cwdData[i + 10], cwdData[i + 11]);
+            addr.dirFileOffset = i;
             return addr;
         }
     }
@@ -489,18 +577,38 @@ _getAddressFromDirectoryFile(char *cwdData, int cwdLength, char *targetName, cha
  * @return DirectoryEntry struct with all values -1 if not found, block index (address) and its length otherwise.
  */
 struct DirectoryEntry
-getAddressFromDirectory(int cwd, int cwdLength, char *targetName, char type) {
+getAddressFromDirectory(int cwd, int cwdLength, unsigned char *targetName, char type) {
     // Read directory
-    char data = malloc(cwdLength);
-    if (_read(cwd, cwdLength, data) != 0) {
-        file_errno = EOTHER;
-        struct DirectoryEntry addr = {-1, -1};
-        return addr;
+    if (cwdLength > 0) {
+        unsigned char *data = malloc(cwdLength);
+        if (_read(cwd, cwdLength, data) != 0) {
+            file_errno = EOTHER;
+            struct DirectoryEntry addr = {-1, -1, -1};
+            free(data);
+            return addr;
+        }
+
+        struct DirectoryEntry result = _getAddressFromDirectoryFile(data, cwdLength, targetName, type);
+        free(data);
+        return result;
     }
 
-    return _getAddressFromDirectoryFile(data, cwdLength, targetName, type);
+    // empty directory - not found.
+    struct DirectoryEntry addr = {-1, -1, -1};
+    return addr;
 }
 
+/**
+ * @brief Allocates a new block for the given file and makes the directory file entry.
+ *
+ * NOTE: Does not increase the size of the parent's directory size in grandparent directory file.
+ *
+ * @param fileName
+ * @param type
+ * @param parentDirBlock
+ * @param parentDirLength
+ * @return int
+ */
 int _createFile(unsigned char *fileName, unsigned char type, int parentDirBlock, int parentDirLength) {
     // Allocate new block
     int newBlockIdx;
@@ -510,7 +618,7 @@ int _createFile(unsigned char *fileName, unsigned char type, int parentDirBlock,
 
     // Append to directory file
     unsigned char directoryEntry[12] = {' ', ' ', ' ', ' ', ' ', ' ', ' '};
-    strncat(directoryEntry, fileName, 7);
+    strncpy((char *)directoryEntry, (char *)fileName, 7);
     // Set type
     directoryEntry[7] = type;
     // Set start block
@@ -519,68 +627,152 @@ int _createFile(unsigned char *fileName, unsigned char type, int parentDirBlock,
     directoryEntry[8] = encoded[1];
     directoryEntry[9] = encoded[0];
     // Set file size (initially 0)
-    directoryEntry[10] = (unsigned char)1;
-    directoryEntry[11] = (unsigned char)1;
-    
+    directoryEntry[10] = (unsigned char)0;
+    directoryEntry[11] = (unsigned char)0;
+
     if (_append(parentDirBlock, parentDirLength, directoryEntry, 12) != 0) {
+        printf("Append failed");
         return -1;
     }
+
+    return 0;
 }
 
-int _updateFileSize(unsigned char *fileName, unsigned char type, int dirBlock, int dirLength, int fileSize) {
-    // Allocate new block
-    int newBlockIdx;
-    if (_allocateNewBlock(-1, &newBlockIdx) != 0) {
+int _updateFilesize(int dirStartBlock, int dirLength, unsigned char *targetName, char type, int filesize) {
+    // Read directory
+    unsigned char *data = malloc(dirLength);
+    if (_read(dirStartBlock, dirLength, data) != 0) {
+        file_errno = EOTHER;
+        free(data);
         return -1;
     }
 
-    // Append to directory file
-    unsigned char directoryEntry[12] = {' ', ' ', ' ', ' ', ' ', ' ', ' '};
-    strncat(directoryEntry, fileName, 7);
-    // Set type
-    directoryEntry[7] = type;
-    // Set start block
-    unsigned char encoded[2];
-    _encode(newBlockIdx, encoded);
-    directoryEntry[8] = encoded[1];
-    directoryEntry[9] = encoded[0];
-    // Set file size (initially 0)
-    directoryEntry[10] = (unsigned char)1;
-    directoryEntry[11] = (unsigned char)1;
-    
-    if (_append(parentDirBlock, parentDirLength, directoryEntry, 12) != 0) {
-        return -1;
+    // Get target
+    char target[9];
+    strncpy(target, (char *)targetName, 7);
+    target[7] = type;
+
+    // Parse & search
+    for (int i = 0; i < dirLength; i += 12) {
+        if (strncmp(target, (char *)data + i, 8) == 0) {
+            // Found target file/directory - calculate block & offset
+            unsigned char encoded[2];
+            _encode(filesize, encoded);
+
+            int c1_block = dirStartBlock + (i + 10) / BLOCK_SIZE;
+            int c1_offset = (i + 10) % BLOCK_SIZE;
+
+            int c0_block = dirStartBlock + (i + 11) / BLOCK_SIZE;
+            int c0_offset = (i + 11) % BLOCK_SIZE;
+
+            // Make change
+            // Modify C1
+            unsigned char readBuffer[BLOCK_SIZE];
+            if (blockRead(c1_block, readBuffer) == -1) {
+                file_errno = EBADDEV;
+                free(data);
+                return -1;
+            }
+            readBuffer[c1_offset] = encoded[1];
+
+            // Maybe modify c0 as well.
+            if (c1_block == c0_block) {
+                readBuffer[c0_offset] = encoded[0];
+            }
+
+            // Write C1
+            if (blockWrite(c1_block, readBuffer)) {
+                file_errno = EBADDEV;
+                free(data);
+                return -1;
+            }
+
+            // Modify and write c0
+            if (c1_block != c0_block) {
+                if (blockRead(c0_block, readBuffer) == -1) {
+                    file_errno = EBADDEV;
+                    free(data);
+                    return -1;
+                }
+                readBuffer[c0_offset] = encoded[0];
+                if (blockWrite(c0_block, readBuffer)) {
+                    file_errno = EBADDEV;
+                    free(data);
+                    return -1;
+                }
+            }
+
+            free(data);
+            return 0;
+        }
     }
+
+    free(data);
+
+    // Not found
+    file_errno = EOTHER;
+    return -1;
 }
 
 /**
  * Start with fullPath + 1 and diraddr=rootidx and dirlength =root length
-*/
+ */
 int _updateDirectorySizes(unsigned char *path, int dirAddr, int dirLength) {
-    unsigned char targetChildName[7];
+    printf("UPDATE DIR SIZE CALLED FOR: %s WITH LENGTH: %i\n", path, dirLength);
+    unsigned char targetChildName[7] = {'\0'};
     unsigned char *c;
-    for (c = path; c != '\\'; c++) {
-        if (c == '\0') {
+    for (c = path; *c != '/'; c++) {
+        if (*c == '\0') {
             return -1;
         } else {
-            strncat(targetChildName, c, 1);
+            strncat((char *)targetChildName, (char *)c, 1);
         }
     }
 
     // Find & update target child if it is a directory
     if (targetChildName[0] != '\0') {
         struct DirectoryEntry targetChild = getAddressFromDirectory(dirAddr, dirLength, targetChildName, 'D');
-        int childSum = _updateDirectorySizes(c+1, targetChild.startBlockIdx, targetChild.length);
-        if (targetChild.) {
-
+        if (targetChild.startBlockIdx != -1) {
+            int childSum = _updateDirectorySizes(c + 1, targetChild.startBlockIdx, targetChild.filesize);
+            _updateFilesize(dirAddr, dirLength, targetChildName, 'D', childSum);
+        } else {
+            file_errno = ENOSUCHFILE;
+            return -1;
         }
     }
-    
 
-    // Update my sum
-    for () {
+    // Sum & return my size
+    int sum = dirLength;
 
+    if (dirLength > 0) {
+        // Read directory
+        unsigned char *data = malloc(dirLength);
+        if (_read(dirAddr, dirLength, data) != 0) {
+            file_errno = EOTHER;
+            free(data);
+            return -1;
+        }
+
+        printf("DATA:\n");
+        for (int i = 0; i < 64; i++)
+            printf("%c", data[i]);
+
+        // Parse & search
+        for (int i = 0; i < dirLength; i += 12) {
+
+            printf("Add size %i from offset %i (%i , %i)\n", _getDecoded(data[i + 10], data[i + 11]), i, data[i + 10], data[i + 11]);
+            sum += _getDecoded(data[i + 10], data[i + 11]);
+        }
+
+        free(data);
     }
+
+    // If root, update root size.
+    if (targetChildName[0] == '\0') {
+        _setRootSize(sum);
+    }
+
+    return sum;
 }
 
 /*
@@ -599,54 +791,94 @@ int _updateDirectorySizes(unsigned char *path, int dirAddr, int dirLength) {
  * Returns 0 if no problem or -1 if the call failed.
  */
 int create(char *pathName) {
-    char nameBuffer[8];
+    printf("CREATE FILE CALL: %s\n", pathName);
+    unsigned char nameBuffer[8] = {'\0'};
     int cwdAddress = root_block_idx;
+    printf("ROOT ADDR: %i | %d", root_block_idx, (5 + numBlocks() * 2 + (BLOCK_SIZE - 1)) / BLOCK_SIZE);
     int cwdLength = _getRootSize();
 
+    unsigned char parentNameBuffer[8];
+    int cwdParentAddress; // Start block number of cwd parent
+    int cwdParentLength;  // Length of dir file for cwd parent
+
     // Navigate and create requested directories.
-    for (int i = 1; i != '\0'; i++) {
-        char c = pathName[i];
+    for (int i = 1; pathName[i] != '\0'; i++) {
+        unsigned char c = pathName[i];
 
-        if (c == '\\') {
+        if (c == '/') {
             // (Create if necessary and) Navigate to the directory specified.
-
+            struct DirectoryEntry newDirAddr;
             // Read cwd file
-            char data = malloc(cwdLength);
-            if (_read(cwdAddress, cwdLength, data) != 0) {
-                return -1;
+            if (cwdLength > 0) {
+                unsigned char *data = malloc(cwdLength);
+                if (_read(cwdAddress, cwdLength, data) != 0) {
+                    free(data);
+                    return -9;
+                }
+
+                // Get new directory file address
+                newDirAddr = _getAddressFromDirectoryFile(data, cwdLength, nameBuffer, 'D');
+                free(data);
+            } else {
+                newDirAddr.startBlockIdx = -1;
             }
 
-            // Get new directory file address
-            struct DirectoryEntry newDirAddr = _getAddressFromDirectoryFile(data, cwdLength, nameBuffer, 'D');
             if (newDirAddr.startBlockIdx == -1) {
                 // Create directory
+                printf("Creating dir: %s\n", nameBuffer);
                 if (_createFile(nameBuffer, 'F', cwdAddress, cwdLength) != 0) {
-                    return -1;
+                    return -2;
                 }
-                
+
+                // We must update the cwd parent's dir file to increase the filesize record of cwd
+                // If it is root, we know where filesize is.
+                if (cwdAddress == root_block_idx) {
+                    _setRootSize(cwdLength + 12);
+                } else {
+                    if (_updateFilesize(cwdParentAddress, cwdParentLength, parentNameBuffer, 'D', cwdLength + 12) != 0) {
+                        return -3;
+                    }
+                }
+
             } else {
                 // 'Navigate' to directory
+                printf("Navigating to dir: %s\n", nameBuffer);
                 cwdAddress = newDirAddr.startBlockIdx;
-                cwdLength = newDirAddr.length;
+                cwdLength = newDirAddr.filesize;
             }
 
+            cwdParentAddress = cwdAddress;
+            cwdParentLength = cwdLength;
+            strncpy((char *)parentNameBuffer, (char *)nameBuffer, 7);
             nameBuffer[0] = '\0'; // Clear name buffer
         } else {
             // Still processing name. Add to buffer and keep going.
-            strncat(nameBuffer, c, 1);
+            strncat((char *)nameBuffer, (char *)&c, 1);
         }
     }
 
     // File creation requested, create file.
+    printf("Creating file: %s at %i\n", nameBuffer, cwdAddress);
     if (nameBuffer != '\0') {
-        if (_createFile(nameBuffer, 'D', cwdAddress, cwdLength) != 0) {
-            return -1;
+        if (_createFile(nameBuffer, 'F', cwdAddress, cwdLength) != 0) {
+            return -4;
+        }
+        // We must update the cwd parent's dir file to increase the filesize record of cwd
+        // If it is root, we know where filesize is.
+        if (cwdAddress == root_block_idx) {
+            _setRootSize(cwdLength + 12);
+        } else {
+            if (_updateFilesize(cwdParentAddress, cwdParentLength, parentNameBuffer, 'D', cwdLength + 12) != 0) {
+                return -5;
+            }
         }
     }
 
     // Update file & directory sizes
+    printf("UPDATE DIR SIZES | %i", _getRootSize());
+    _updateDirectorySizes((unsigned char *)pathName, root_block_idx, _getRootSize());
 
-    return -1;
+    return 0;
 }
 
 /*
@@ -664,6 +896,63 @@ file2	0
  * The directoryName is a full pathname.
  */
 void list(char *result, char *directoryName) {
+    result[0] = '\0';
+    unsigned char nameBuffer[8] = {'\0'};
+    int cwdAddress = root_block_idx;
+    int cwdLength = _getRootSize();
+
+    // Navigate requested directory.
+    for (int i = 1; directoryName[i] != '\0'; i++) {
+        unsigned char c = directoryName[i];
+        printf("PROCESSING : %c\n", c);
+
+        if (c == '/') {
+            printf("BREAK & PROCESS: %s\n", nameBuffer);
+
+            // Get directory file address
+            struct DirectoryEntry dirAddr = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, 'D');
+            printf("RES: %i\n", dirAddr.startBlockIdx);
+            if (dirAddr.startBlockIdx == -1) {
+                file_errno = ENOSUCHFILE;
+                return;
+            } else {
+                printf("Setting CWD address and length");
+                // 'Navigate' to directory
+                cwdAddress = dirAddr.startBlockIdx;
+                cwdLength = dirAddr.filesize;
+            }
+
+            nameBuffer[0] = '\0'; // Clear name buffer
+        } else {
+            // Still processing name. Add to buffer and keep going.
+            strncat((char *)nameBuffer, (char *)&c, 1);
+        }
+    }
+
+    // Print dir contents
+    strncat(result, directoryName, strlen(directoryName) + 1);
+    strncat(result, ":\n", 2);
+
+    // Read request dir
+    if (cwdLength > 0) {
+        unsigned char *data = malloc(cwdLength);
+        printf("READING REQUEST DIR\n");
+        if (_read(cwdAddress, cwdLength, data) != 0) {
+            free(data);
+            return;
+        }
+
+        for (int i = 0; i < cwdLength; i += 12) {
+            strncat(result, (char *)data + i, 7); // directory/file name
+            strncat(result, ":\t", 2);
+            char filesize[6]; // max filesize is 256^2
+            sprintf(filesize, "%i", _getDecoded(data[i + 10], data[i + 11]));
+            strncat(result, filesize, 5); // size
+            strncat(result, "\n", 1);     // each file on newline
+        }
+    }
+
+    strncat(result, "\0", 1);
 }
 
 /*
