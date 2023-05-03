@@ -30,7 +30,7 @@ void RunAllTests(void) {
     SUITE_ADD_TEST(suite, TestCreateLotsOfFiles);
     SUITE_ADD_TEST(suite, TestCreateFileWithDir);
     SUITE_ADD_TEST(suite, TestCreateFilesWithDir);
-    // SUITE_ADD_TEST(suite, TestWriteFile);
+    SUITE_ADD_TEST(suite, TestWriteFile);
     // SUITE_ADD_TEST(suite, TestReadFile);
     // SUITE_ADD_TEST(suite, TestReadLotsOfFiles);
     // SUITE_ADD_TEST(suite, TestWriteAndReadWithDirectories);
