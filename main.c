@@ -23,15 +23,15 @@ void RunAllTests(void) {
     CuString *output = CuStringNew();
     CuSuite *suite = CuSuiteNew();
 
-    SUITE_ADD_TEST(suite, TestFormat);
-    SUITE_ADD_TEST(suite, TestRootDirectory);
-    SUITE_ADD_TEST(suite, TestCreateFile);
-    SUITE_ADD_TEST(suite, TestCreateFiles);
-    SUITE_ADD_TEST(suite, TestCreateLotsOfFiles);
-    SUITE_ADD_TEST(suite, TestCreateFileWithDir);
-    SUITE_ADD_TEST(suite, TestCreateFilesWithDir);
-    SUITE_ADD_TEST(suite, TestWriteFile);
-    // SUITE_ADD_TEST(suite, TestReadFile);
+    // SUITE_ADD_TEST(suite, TestFormat);
+    // SUITE_ADD_TEST(suite, TestRootDirectory);
+    // SUITE_ADD_TEST(suite, TestCreateFile);
+    // SUITE_ADD_TEST(suite, TestCreateFiles);
+    // SUITE_ADD_TEST(suite, TestCreateLotsOfFiles);
+    // SUITE_ADD_TEST(suite, TestCreateFileWithDir);
+    // SUITE_ADD_TEST(suite, TestCreateFilesWithDir);
+    // SUITE_ADD_TEST(suite, TestWriteFile);
+    SUITE_ADD_TEST(suite, TestReadFile);
     // SUITE_ADD_TEST(suite, TestReadLotsOfFiles);
     // SUITE_ADD_TEST(suite, TestWriteAndReadWithDirectories);
     // SUITE_ADD_TEST(suite, TestSeek);

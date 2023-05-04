@@ -362,11 +362,12 @@ int volumeName(char *result) {
  * @param result
  * @return int 0 for success, -1 for error.
  */
-int _read(int startBlockIdx, int length, unsigned char *result) {
-    printf("READING FROM %i for length %i\n", startBlockIdx, length);
+int _read(int startBlockIdx, int length, int offset, unsigned char *result) {
+    printf("READING FROM BLOCK: %i with offset: %i for length %i\n", startBlockIdx, offset, length);
     result[0] = '\0';
 
     int remainingLength = length;
+    int remainingOffset = offset;
     int blockIdx = startBlockIdx;
 
     do {
@@ -378,10 +379,19 @@ int _read(int startBlockIdx, int length, unsigned char *result) {
             return -1;
         }
 
-        if (remainingLength > BLOCK_SIZE) {
+        if (remainingOffset > BLOCK_SIZE) {
+            // Offset by whole block
+            remainingOffset -= BLOCK_SIZE;
+        } else if (remainingOffset > 0) {
+            // Copy partial block with offset
+            memcpy((char *)result + (length - remainingLength), (char *)readBuffer+remainingOffset, BLOCK_SIZE-remainingOffset);
+            remainingLength -= BLOCK_SIZE;
+        } else if (remainingLength > BLOCK_SIZE) {
+            // Copy whole block
             memcpy((char *)result + (length - remainingLength), (char *)readBuffer, BLOCK_SIZE);
             remainingLength -= BLOCK_SIZE;
         } else {
+            // Copy partial block without offset
             memcpy((char *)result + (length - remainingLength), (char *)readBuffer, remainingLength);
             remainingLength -= remainingLength;
         }
@@ -391,25 +401,15 @@ int _read(int startBlockIdx, int length, unsigned char *result) {
 
     } while (blockIdx != END_OF_FILE && blockIdx != UNALLOCATED);
 
-    if (remainingLength != 0) {
-        printf("ERRO! Remaining length: %i\n", remainingLength);
+    if (remainingOffset > 0) {
+        printf("EoF Reached.");
+        // Not an error - user must seek 0.
+
+    } else if (remainingLength != 0) {
+        printf("ERROR! Remaining length: %i\n", remainingLength);
         file_errno = EOTHER;
         return -1;
     }
-
-    // printf("READING COMPLETE! :\n");
-    // if (startBlockIdx == 9) {
-    //     for (int i = 0; i < 64; i++)
-    //         printf("%c - %i \n", result[i], (int)result[i]);
-    //     printf("\n");
-    // }
-
-    // blockRead(2, result);
-
-    // printf("READING COMPLETE!\n");
-    // for (int i = 0; i < 64; i++)
-    //     printf("%c - %i \n", result[i], (int)result[i]);
-    // printf("\n");
 
     return 0;
 }
@@ -560,7 +560,7 @@ getAddressFromDirectory(int cwd, int cwdLength, unsigned char *targetName, char 
     // Read directory
     if (cwdLength > 0) {
         unsigned char *data = malloc(cwdLength);
-        if (_read(cwd, cwdLength, data) != 0) {
+        if (_read(cwd, cwdLength, 0, data) != 0) {
             file_errno = EOTHER;
             struct DirectoryEntry addr = {-1, -1, -1};
             free(data);
@@ -619,7 +619,7 @@ int _createFile(unsigned char *fileName, unsigned char type, int parentDirBlock,
 int _updateFilesize(int dirStartBlock, int dirLength, unsigned char *targetName, char type, int filesize) {
     // Read directory
     unsigned char *data = malloc(dirLength);
-    if (_read(dirStartBlock, dirLength, data) != 0) {
+    if (_read(dirStartBlock, dirLength, 0, data) != 0) {
         file_errno = EOTHER;
         free(data);
         return -1;
@@ -728,7 +728,7 @@ int create(char *pathName) {
             // Read cwd file
             if (cwdLength > 0) {
                 unsigned char *data = malloc(cwdLength);
-                if (_read(cwdAddress, cwdLength, data) != 0) {
+                if (_read(cwdAddress, cwdLength, 0, data) != 0) {
                     free(data);
                     return -9;
                 }
@@ -809,6 +809,35 @@ int create(char *pathName) {
     return 0;
 }
 
+/**
+ * Recurse down the directory tree and retrieve the size
+ */
+int _getDirectorySize(int dirAddr, int dirLength) {
+    int sum = dirLength;
+
+    // Read request dir
+    if (dirLength > 0) {
+        unsigned char *directory = malloc(dirLength);
+        if (_read(dirAddr, dirLength, 0, directory) != 0) {
+            file_errno = EOTHER;
+            free(directory);
+            return -1;
+        }
+
+        for (int i = 0; i < dirLength; i += 12) {
+            if (directory[i+7] == 'D') {
+                sum += _getDirectorySize(_getDecoded(directory[i+8], directory[i+9]), _getDecoded(directory[i+10], directory[i+11]));
+            } else {
+                sum += _getDecoded(directory[i+10], directory[i+11]);
+            }
+        }
+
+        free(directory);
+    }
+
+    return sum;
+}
+
 /*
  * Returns a list of all files in the named directory.
  * The "result" string is filled in with the output.
@@ -881,7 +910,7 @@ void list(char *result, char *directoryName) {
     if (cwdLength > 0) {
         unsigned char *data = malloc(cwdLength);
         printf("READING REQUEST DIR\n");
-        if (_read(cwdAddress, cwdLength, data) != 0) {
+        if (_read(cwdAddress, cwdLength, 0, data) != 0) {
             free(data);
             return;
         }
@@ -889,10 +918,14 @@ void list(char *result, char *directoryName) {
         for (int i = 0; i < cwdLength; i += 12) {
             strncat(result, (char *)data + i, 7); // directory/file name
             strcat(result, ":\t");
-            char filesize[6]; // max filesize is 256^2
-            unsigned char path = malloc();
-            sprintf(filesize, "%i", _getDirectorySize());
-            strncat(result, filesize, 5); // size
+            int filesize = _getDecoded(data[i+10], data[i+11]);
+            char filesizeFormatted[6]; // max filesize is 256^2 -> I.e. 5 chars max.
+            if (data[i+7] == 'D') {
+                sprintf(filesizeFormatted, "%i", _getDirectorySize(_getDecoded(data[i+8], data[i+9]), filesize));
+            } else {
+                sprintf(filesizeFormatted, "%i", filesize);
+            }
+            strncat(result, filesizeFormatted, 5); // size
             strcat(result, "\n");     // each file on newline
         }
     }
@@ -902,71 +935,6 @@ void list(char *result, char *directoryName) {
     printf("========================= OUT ========================\n");
     printf("%s", result);
     printf("======================================================\n");
-}
-
-/**
- * Recurse down the directory tree and retrieve the size
- */
-int _getDirectorySize(int dirAddr, int dirLength) {
-    
-
-
-    // printf("GET DIR SIZE CALLED FOR: %s WITH LENGTH: %i\n", path, dirLength);
-    // unsigned char targetChildName[7] = {'\0'};
-    // unsigned char *c;
-    // for (c = path; *c != '/'; c++) {
-    //     if (*c == '\0') {
-    //         return -1;
-    //     } else {
-    //         strncat((char *)targetChildName, (char *)c, 1);
-    //     }
-    // }
-
-    // // Find & update target child if it is a directory
-    // if (targetChildName[0] != '\0') {
-    //     struct DirectoryEntry targetChild = getAddressFromDirectory(dirAddr, dirLength, targetChildName, 'D');
-    //     if (targetChild.startBlockIdx != -1) {
-    //         int childSum = _updateDirectorySizes(c + 1, targetChild.startBlockIdx, targetChild.filesize);
-    //         _updateFilesize(dirAddr, dirLength, targetChildName, 'D', childSum);
-    //     } else {
-    //         file_errno = ENOSUCHFILE;
-    //         return -1;
-    //     }
-    // }
-
-    // // Sum & return my size
-    // int sum = dirLength;
-
-    // if (dirLength > 0) {
-    //     printf("=== DIR LENGTH IS :: %i", dirLength);
-    //     // Read directory
-    //     unsigned char *data = malloc(dirLength);
-    //     if (_read(dirAddr, dirLength, data) != 0) {
-    //         file_errno = EOTHER;
-    //         free(data);
-    //         return -1;
-    //     }
-
-    //     printf("DATA:\n");
-    //     // for (int i = 0; i < 64; i++)
-    //     //     printf("%c - %i\n", data[i], (int)data[i]);
-
-
-    //     // Parse & search
-    //     for (int i = 0; i < dirLength; i += 12) {
-    //         printf("Add size %i from offset %i (%i , %i)\n", _getDecoded(data[i + 10], data[i + 11]), i, data[i + 10], data[i + 11]);
-    //         sum += _getDecoded(data[i + 10], data[i + 11]);
-    //     }
-
-    //     free(data);
-    // }
-
-    // // If root, update root size.
-    // if (targetChildName[0] == '\0') {
-    //     _setRootSize(sum);
-    // }
-
-    // return sum;
 }
 
 /*
@@ -1035,6 +1003,17 @@ int a2write(char *fileName, void *data, int length) {
     return 0;
 }
 
+
+
+#define MAX_OPEN_FILES 64
+struct FilePointer {
+    unsigned char crc;
+    int offset;
+};
+
+// Global file pointer list
+struct FilePointer filePointers[MAX_OPEN_FILES*sizeof(struct FilePointer)];
+
 /*
  * Reads data from the start of the file.
  * Maintains a file position so that subsequent reads continue
@@ -1044,7 +1023,66 @@ int a2write(char *fileName, void *data, int length) {
  * Returns 0 if no problem or -1 if the call failed.
  */
 int a2read(char *fileName, void *data, int length) {
-    return -1;
+    if (length == 0) {
+        return 0;
+    }
+
+    // Get start block of file
+    unsigned char nameBuffer[8] = {'\0'};
+    int cwdAddress = root_block_idx;
+    int cwdLength = _getRootSize();
+
+    // Navigate to file
+    for (int i = 1; fileName[i] != '\0'; i++) {
+        unsigned char c = fileName[i];
+
+        if (c == '/') {
+            // Get directory file address
+            struct DirectoryEntry dirAddr = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, 'D');
+            printf("RES: %i\n", dirAddr.startBlockIdx);
+            if (dirAddr.startBlockIdx == -1) {
+                file_errno = ENOSUCHFILE;
+                return -1;
+            } else {
+                printf("Setting CWD address and length");
+                // 'Navigate' to directory
+                cwdAddress = dirAddr.startBlockIdx;
+                cwdLength = dirAddr.filesize;
+            }
+
+            nameBuffer[0] = '\0'; // Clear name buffer
+        } else {
+            // Still processing name. Add to buffer and keep going.
+            strncat((char *)nameBuffer, (char *)&c, 1);
+        }
+    }
+
+    struct DirectoryEntry fileMetadata = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, 'D');
+
+    int offset = 0;
+    int fpIdx;
+    // Check for any file pointers
+    for (int i = 0; i < (sizeof(filePointers) / sizeof(struct FilePointer)); i++) {
+        printf("ITERATION: %i", i);
+
+        struct FilePointer fp = filePointers[i];
+        if (strncmp(fileName, fp.fileName, 7)) {
+            offset = fp.offset;
+            fpIdx = i;
+        }
+    }
+
+    if (_read(fileMetadata.startBlockIdx, length, offset, data) != -1) {
+        return -1;
+    }
+
+    // Save file pointer 
+    if (offset == 0) {
+        struct FilePointer fp;
+        strcpy(fp.fileName, fileName);
+    }
+
+    return 0;
 }
 
 /*
@@ -1058,5 +1096,9 @@ int a2read(char *fileName, void *data, int length) {
  * Returns 0 if no problem or -1 if the call failed.
  */
 int seek(char *fileName, int location) {
+
+
     return -1;
 }
+
+
