@@ -17,7 +17,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define NUMBLOCKS 1000 // you are allowed to change this value for further testing
+#define NUMBLOCKS 16 // you are allowed to change this value for further testing
 
 #define EBADBLOCK 1
 #define EOPENINGDEVICE 2
@@ -34,7 +34,7 @@ int dev_errno = 0;
  * Prints the message and then information about the most recent error.
  */
 void printDevError(char *message) {
-    fprintf(stderr, "%s ERROR: ", message);
+    fprintf(stderr, "%s ERROR: %i ", message, BLOCK_SIZE);
     switch (dev_errno) {
     case EBADBLOCK:
         fprintf(stderr, "bad block number\n");

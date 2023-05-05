@@ -32,6 +32,7 @@ struct BlockEntry {
 struct DirectoryEntry {
     int startBlockIdx;
     int filesize;
+    int dirFileOffset;
 };
 
 #define MAX_OPEN_FILES 1022 // Assignment brief only allows for max 1024 blocks. Each file/dir at least requires 1 block. Sys area takes up atleast 2.
@@ -59,8 +60,8 @@ int getRootIndex() {
 
 void resetBlocks() {
     // printf("\n = CLEARING BLOCKS = \n");
-    unsigned char buffer[BLOCK_SIZE] = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
-    // unsigned char buffer[BLOCK_SIZE] = "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO";
+    unsigned char buffer[64] = "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0";
+    // unsigned char buffer[64] = "OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO";
     for (int i = 0; i < numBlocks(); i++) {
         blockWrite(i, buffer);
     }
@@ -76,7 +77,7 @@ void resetBlocks() {
  * @return int
  */
 int isFormatted() {
-    unsigned char data[BLOCK_SIZE];
+    unsigned char data[64];
 
     if (blockRead(1, data) == -1) {
         file_errno = EBADDEV;
@@ -130,7 +131,7 @@ int _getRootSize() {
         return -5;
     }
 
-    unsigned char buffer[BLOCK_SIZE];
+    unsigned char buffer[64];
     if (blockRead(1, buffer) == -1) {
         file_errno = EBADDEV;
         printDevError("device err");
@@ -140,7 +141,7 @@ int _getRootSize() {
 }
 
 int _setRootSize(int size) {
-    unsigned char buffer[BLOCK_SIZE];
+    unsigned char buffer[64];
     if (blockRead(1, buffer) == -1) {
         file_errno = EBADDEV;
         printDevError("device err");
@@ -238,7 +239,11 @@ struct BlockEntry getBlockEntry(int block) {
     return entry;
 }
 
+// int test = 0;
 int setBlockEntry(struct BlockEntry entry) {
+    // printf("Setting block entry %i\n", test);
+    // test++;
+
     // Determine block to change
     int c1_block = (5 + 2 * (entry.idx)) / BLOCK_SIZE + 1;
     int c1_offset = (5 + 2 * (entry.idx)) % BLOCK_SIZE;
@@ -364,8 +369,8 @@ int format(char *volumeName) {
     }
 
     // Set volume name to first block
-    unsigned char buffer[BLOCK_SIZE];
-    strncpy((char *)buffer, volumeName, BLOCK_SIZE);
+    unsigned char buffer[64];
+    strncpy((char *)buffer, volumeName, 64);
 
     if (blockWrite(0, buffer) == -1) {
         file_errno = EBADDEV;
@@ -546,7 +551,7 @@ int _append(int startBlockIdx, int currentLength, unsigned char *data, int dataL
         blockIdx = getBlockEntry(blockIdx).value;
     }
 
-    unsigned char buffer[BLOCK_SIZE];
+    unsigned char buffer[64];
     if (blockRead(blockIdx, buffer) == -1) {
         file_errno = EBADDEV;
         printDevError("device err");
@@ -607,16 +612,18 @@ _getAddressFromDirectoryFile(unsigned char *cwdData, int cwdLength, unsigned cha
     target[8] = '\0';
 
     // Parse & search
-    struct DirectoryEntry addr = {-1, -1};
+    struct DirectoryEntry addr = {-1, -1, -1};
     for (int i = 0; i < cwdLength; i += 12) {
         char candidate[9];
         strncpy(candidate, (char *)cwdData + i, 7);
         candidate[7] = cwdData[i + 7];
         target[8] = '\0';
         if (strncmp(target, candidate, 8) == 0) {
+            // if (strncmp(target, (char *)cwdData + i, 8) == 0) {
             // Found target file/directory - return addr
             addr.startBlockIdx = _getDecoded(cwdData[i + 8], cwdData[i + 9]);
             addr.filesize = _getDecoded(cwdData[i + 10], cwdData[i + 11]);
+            addr.dirFileOffset = i;
             return addr;
         }
     }
@@ -640,7 +647,7 @@ getAddressFromDirectory(int cwd, int cwdLength, unsigned char *targetName, char 
         unsigned char *data = malloc(cwdLength);
         if (_read(cwd, cwdLength, 0, data) != 0) {
             file_errno = EOTHER;
-            struct DirectoryEntry addr = {-1, -1};
+            struct DirectoryEntry addr = {-1, -1, -1};
             free(data);
             return addr;
         }
@@ -651,7 +658,7 @@ getAddressFromDirectory(int cwd, int cwdLength, unsigned char *targetName, char 
     }
 
     // empty directory - not found.
-    struct DirectoryEntry addr = {-1, -1};
+    struct DirectoryEntry addr = {-1, -1, -1};
     return addr;
 }
 
