@@ -17,7 +17,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define NUMBLOCKS 16 // you are allowed to change this value for further testing
+#define NUMBLOCKS 1000 // you are allowed to change this value for further testing
 
 #define EBADBLOCK 1
 #define EOPENINGDEVICE 2

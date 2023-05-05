@@ -67,6 +67,7 @@ void removeDevice() {
  * Only called once each time the program is run.
  */
 int connectDevice() {
+    printf("CONNECT");
     int dev_fd;
     struct stat fileStatus;
 
