@@ -283,6 +283,7 @@ int format(char *volumeName) {
 
     // Clear file pointers
     memset(filePointers, 0, sizeof(filePointers));
+    nOpenFiles = 0;
 
     // Check block number validity - atleast one block must be free after formatting to be considered 'valid'
     int reserved_blocks = 1 + ((5 + numBlocks() * 2 + (BLOCK_SIZE - 1)) / BLOCK_SIZE); // always round up
@@ -881,8 +882,8 @@ int create(char *pathName) {
     // File creation requested, create file.
     printf("Creating file: %s at %i\n", nameBuffer, cwdAddress);
     if (nameBuffer != '\0') {
-        int _; // Throwaway variable
-        if (_createFile(nameBuffer, 'F', cwdAddress, cwdLength, &_) != 0) {
+        int newBlockIdx; // Throwaway variable
+        if (_createFile(nameBuffer, 'F', cwdAddress, cwdLength, &newBlockIdx) != 0) {
             return -4;
         }
         // We must update the cwd parent's dir file to increase the filesize record of cwd
@@ -894,13 +895,18 @@ int create(char *pathName) {
                 return -5;
             }
         }
+
+        // Create file pointer
+        printf("Creating file pointer at %i with val %i %i", nOpenFiles, cwdAddress, cwdLength);
+        filePointers[nOpenFiles].startBlockIdx = newBlockIdx;
+        filePointers[nOpenFiles].offset = 0;
+
+        nOpenFiles++;
+        return 0;
+    } else {
+        file_errno = EOTHER;
+        return -1;
     }
-
-    // Update file & directory sizes
-    // printf("UPDATE DIR SIZES | %i", _getRootSize());
-    // _updateDirectorySizes((unsigned char *)pathName, root_block_idx, _getRootSize());
-
-    return 0;
 }
 
 /**
@@ -1076,8 +1082,6 @@ int a2write(char *fileName, void *data, int length) {
         return -1;
     }
 
-    printf("=== WRITE === %s %i %i\n", nameBuffer, length, file.filesize);
-
     // File exists, append data
     if (_append(file.startBlockIdx, file.filesize, data, length) != 0) {
         printf("Append failed");
@@ -1135,14 +1139,14 @@ int a2read(char *fileName, void *data, int length) {
     struct DirectoryEntry fileMetadata = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, 'D');
 
     int offset = 0;
-    int fpIdx;
+    int fpIdx = -1;
     // Check for any file pointers
     for (int i = 0; i < nOpenFiles; i++) {
-        printf("ITERATION: %i", i);
+        printf("ITERATION: %i\n", i);
+        printf("CHECK %i %i\n", filePointers[i].startBlockIdx, filePointers[i].offset);
+        if (filePointers[i].startBlockIdx == fileMetadata.startBlockIdx) {
 
-        struct FilePointer fp = filePointers[i];
-        if (fp.startBlockIdx == fileMetadata.startBlockIdx) {
-            offset = fp.offset;
+            offset = filePointers[i].offset;
             fpIdx = i;
         }
     }
@@ -1152,15 +1156,10 @@ int a2read(char *fileName, void *data, int length) {
         return -1;
     }
 
-    // Save file pointer
-    if (offset == 0) {
-        struct FilePointer fp;
-        fp.startBlockIdx = fileMetadata.startBlockIdx;
-        fp.offset = length;
-
-        filePointers[nOpenFiles] = fp;
-        nOpenFiles++;
-
+    // Update file pointer
+    if (fpIdx < 0) {
+        file_errno = EOTHER;
+        return -1;
     } else {
         filePointers[fpIdx].startBlockIdx = fileMetadata.startBlockIdx;
         filePointers[fpIdx].offset = length;
@@ -1212,5 +1211,20 @@ int seek(char *fileName, int location) {
 
     struct DirectoryEntry fileMetadata = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, 'D');
 
-    return -1;
+    // Edit file pointer
+    for (int i = 0; i < nOpenFiles; i++) {
+        // struct FilePointer fp = ;
+        if (filePointers[i].startBlockIdx == fileMetadata.startBlockIdx) {
+            // Set location to EoF if too large
+            if (location > fileMetadata.filesize) {
+                filePointers[i].offset = fileMetadata.filesize;
+            } else {
+                filePointers[i].offset = location;
+            }
+        }
+    }
+
+    printf("SET FILE POINTER %i\n", location);
+
+    return 0;
 }
