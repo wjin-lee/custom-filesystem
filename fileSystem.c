@@ -35,15 +35,15 @@ struct DirectoryEntry {
     int dirFileOffset;
 };
 
-#define MAX_OPEN_FILES 1022  // Assignment brief only allows for max 1024 blocks. Each file/dir at least requires 1 block. Sys area takes up atleast 2.
+#define MAX_OPEN_FILES 1022 // Assignment brief only allows for max 1024 blocks. Each file/dir at least requires 1 block. Sys area takes up atleast 2.
 struct FilePointer {
-    int startBlockIdx;  // Serves as unique ID
+    int startBlockIdx; // Serves as unique ID
     int offset;
 };
 
 // Global file pointer list
-struct FilePointer filePointers[MAX_OPEN_FILES*sizeof(struct FilePointer)];
-int nOpenFiles = 0;  // Number of open files
+struct FilePointer filePointers[MAX_OPEN_FILES * sizeof(struct FilePointer)];
+int nOpenFiles = 0; // Number of open files
 
 void resetBlocks() {
     printf("RESETTING BLOCKS");
@@ -368,7 +368,7 @@ int volumeName(char *result) {
     return 0;
 }
 
-int min(int n0, int n1) {
+int _min(int n0, int n1) {
     if (n0 < n1) {
         return n0;
     } else {
@@ -401,8 +401,6 @@ int _read(int startBlockIdx, int length, int offset, unsigned char *result) {
             return -1;
         }
 
-
-
         if (remainingOffset > BLOCK_SIZE) {
             printf("whole block offset\n");
             // Offset by whole block
@@ -410,8 +408,8 @@ int _read(int startBlockIdx, int length, int offset, unsigned char *result) {
         } else {
             printf("partial offset\n");
             // Copy partial block with offset
-            memcpy((char *)result + (length - remainingLength), (char *)readBuffer+remainingOffset, min(BLOCK_SIZE-remainingOffset, remainingLength));
-            remainingLength -= min(BLOCK_SIZE-remainingOffset, remainingLength);
+            memcpy((char *)result + (length - remainingLength), (char *)readBuffer + remainingOffset, _min(BLOCK_SIZE - remainingOffset, remainingLength));
+            remainingLength -= _min(BLOCK_SIZE - remainingOffset, remainingLength);
             remainingOffset -= remainingOffset;
         }
         // } else if (remainingLength > BLOCK_SIZE) {
@@ -502,10 +500,6 @@ int _append(int startBlockIdx, int currentLength, unsigned char *data, int dataL
         file_errno = EBADDEV;
         return -1;
     }
-    printf("READ block:\n");
-    for (int i = 0; i < 64; i++)
-        printf("%c", data[i]);
-    printf("\n");
 
     // Start appending
     int bufferPos = currentLength % BLOCK_SIZE;
@@ -607,78 +601,76 @@ getAddressFromDirectory(int cwd, int cwdLength, unsigned char *targetName, char 
     return addr;
 }
 
-/**
- * Mode is either C for create or F for find
-*/
-int getDirectory(char * path, char type, struct DirectoryEntry result, char mode) {
-    unsigned char nameBuffer[8] = {'\0'};
-    int cwdAddress = root_block_idx;
-    int cwdLength = _getRootSize();
+// /**
+//  * Mode is either C for create or F for find
+//  */
+// int getDirectory(char *path, char type, struct DirectoryEntry result, char mode) {
+//     unsigned char nameBuffer[8] = {'\0'};
+//     int cwdAddress = root_block_idx;
+//     int cwdLength = _getRootSize();
 
-    unsigned char parentNameBuffer[8];
-    int cwdParentAddress; // Start block number of cwd parent
-    int cwdParentLength;  // Length of dir file for cwd parent
+//     unsigned char parentNameBuffer[8];
+//     int cwdParentAddress; // Start block number of cwd parent
+//     int cwdParentLength;  // Length of dir file for cwd parent
 
-    // Navigate to file
-    for (int i = 1; path[i] != '\0'; i++) {
-        unsigned char c = path[i];
+//     // Navigate to file
+//     for (int i = 1; path[i] != '\0'; i++) {
+//         unsigned char c = path[i];
 
-        if (c == '/') {
-            // Get directory file address
-            struct DirectoryEntry dirAddr = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, type);
-            if (dirAddr.startBlockIdx == -1) {
-                if (mode == 'F') {
-                    // Find mode - no such file.
-                    file_errno = ENOSUCHFILE;
-                    return -1;
-                } else {
-                    // Create mode - create directory.
-                    printf("Creating dir: %s\n", nameBuffer);
-                    int newDirStartIdx;
-                    if (_createFile(nameBuffer, 'D', cwdAddress, cwdLength, &newDirStartIdx) != 0) {
-                        return -2;
-                    }
+//         if (c == '/') {
+//             // Get directory file address
+//             struct DirectoryEntry dirAddr = getAddressFromDirectory(cwdAddress, cwdLength, nameBuffer, type);
+//             if (dirAddr.startBlockIdx == -1) {
+//                 if (mode == 'F') {
+//                     // Find mode - no such file.
+//                     file_errno = ENOSUCHFILE;
+//                     return -1;
+//                 } else {
+//                     // Create mode - create directory.
+//                     printf("Creating dir: %s\n", nameBuffer);
+//                     int newDirStartIdx;
+//                     if (_createFile(nameBuffer, 'D', cwdAddress, cwdLength, &newDirStartIdx) != 0) {
+//                         return -2;
+//                     }
 
-                    // We must update the cwd parent's dir file to increase the filesize record of cwd
-                    // If it is root, we know where filesize is.
-                    if (cwdAddress == root_block_idx) {
-                        _setRootSize(cwdLength + 12);
-                    } else {
-                        if (_updateFilesize(cwdParentAddress, cwdParentLength, parentNameBuffer, 'D', cwdLength + 12) != 0) {
-                            return -3;
-                        }
-                    }
+//                     // We must update the cwd parent's dir file to increase the filesize record of cwd
+//                     // If it is root, we know where filesize is.
+//                     if (cwdAddress == root_block_idx) {
+//                         _setRootSize(cwdLength + 12);
+//                     } else {
+//                         if (_updateFilesize(cwdParentAddress, cwdParentLength, parentNameBuffer, 'D', cwdLength + 12) != 0) {
+//                             return -3;
+//                         }
+//                     }
 
-                    // Navigate to new directory
-                    cwdParentAddress = cwdAddress;
-                    cwdParentLength = cwdLength+12;
+//                     // Navigate to new directory
+//                     cwdParentAddress = cwdAddress;
+//                     cwdParentLength = cwdLength + 12;
 
-                    cwdAddress = newDirStartIdx;
-                    cwdLength = 0;
-                }
-                
-                
-            } else {
-                printf("Setting CWD address and length");
-                // 'Navigate' to directory
-                cwdAddress = dirAddr.startBlockIdx;
-                cwdLength = dirAddr.filesize;
-            }
+//                     cwdAddress = newDirStartIdx;
+//                     cwdLength = 0;
+//                 }
 
-            strncpy((char *)parentNameBuffer, (char *)nameBuffer, 7);
-            nameBuffer[0] = '\0'; // Clear name buffer
-        } else {
-            // Still processing name. Add to buffer and keep going.
-            strncat((char *)nameBuffer, (char *)&c, 1);
-        }
-    }
+//             } else {
+//                 printf("Setting CWD address and length");
+//                 // 'Navigate' to directory
+//                 cwdAddress = dirAddr.startBlockIdx;
+//                 cwdLength = dirAddr.filesize;
+//             }
 
-    result.startBlockIdx = cwdAddress;
-    result.filesize - cwdLength;
-    
-    return 0;
-}
+//             strncpy((char *)parentNameBuffer, (char *)nameBuffer, 7);
+//             nameBuffer[0] = '\0'; // Clear name buffer
+//         } else {
+//             // Still processing name. Add to buffer and keep going.
+//             strncat((char *)nameBuffer, (char *)&c, 1);
+//         }
+//     }
 
+//     result.startBlockIdx = cwdAddress;
+//     result.filesize - cwdLength;
+
+//     return 0;
+// }
 
 /**
  * @brief Allocates a new block for the given file and makes the directory file entry.
@@ -863,7 +855,7 @@ int create(char *pathName) {
 
                 // Navigate to new directory
                 cwdParentAddress = cwdAddress;
-                cwdParentLength = cwdLength+12;
+                cwdParentLength = cwdLength + 12;
 
                 cwdAddress = newDirStartIdx;
                 cwdLength = 0;
@@ -878,7 +870,6 @@ int create(char *pathName) {
                 cwdLength = newDirAddr.filesize;
             }
 
-            
             strncpy((char *)parentNameBuffer, (char *)nameBuffer, 7);
             nameBuffer[0] = '\0'; // Clear name buffer
         } else {
@@ -928,10 +919,10 @@ int _getDirectorySize(int dirAddr, int dirLength) {
         }
 
         for (int i = 0; i < dirLength; i += 12) {
-            if (directory[i+7] == 'D') {
-                sum += _getDirectorySize(_getDecoded(directory[i+8], directory[i+9]), _getDecoded(directory[i+10], directory[i+11]));
+            if (directory[i + 7] == 'D') {
+                sum += _getDirectorySize(_getDecoded(directory[i + 8], directory[i + 9]), _getDecoded(directory[i + 10], directory[i + 11]));
             } else {
-                sum += _getDecoded(directory[i+10], directory[i+11]);
+                sum += _getDecoded(directory[i + 10], directory[i + 11]);
             }
         }
 
@@ -1003,7 +994,6 @@ void list(char *result, char *directoryName) {
             cwdLength = dirAddr.filesize;
         }
     }
-    
 
     // Print dir contents
     strncat(result, directoryName, strlen(directoryName) + 1);
@@ -1021,15 +1011,15 @@ void list(char *result, char *directoryName) {
         for (int i = 0; i < cwdLength; i += 12) {
             strncat(result, (char *)data + i, 7); // directory/file name
             strcat(result, ":\t");
-            int filesize = _getDecoded(data[i+10], data[i+11]);
+            int filesize = _getDecoded(data[i + 10], data[i + 11]);
             char filesizeFormatted[6]; // max filesize is 256^2 -> I.e. 5 chars max.
-            if (data[i+7] == 'D') {
-                sprintf(filesizeFormatted, "%i", _getDirectorySize(_getDecoded(data[i+8], data[i+9]), filesize));
+            if (data[i + 7] == 'D') {
+                sprintf(filesizeFormatted, "%i", _getDirectorySize(_getDecoded(data[i + 8], data[i + 9]), filesize));
             } else {
                 sprintf(filesizeFormatted, "%i", filesize);
             }
             strncat(result, filesizeFormatted, 5); // size
-            strcat(result, "\n");     // each file on newline
+            strcat(result, "\n");                  // each file on newline
         }
     }
 
@@ -1086,7 +1076,7 @@ int a2write(char *fileName, void *data, int length) {
         return -1;
     }
 
-    printf("=== WRITE === %s %i %i\n",nameBuffer, length, file.filesize);
+    printf("=== WRITE === %s %i %i\n", nameBuffer, length, file.filesize);
 
     // File exists, append data
     if (_append(file.startBlockIdx, file.filesize, data, length) != 0) {
@@ -1095,7 +1085,7 @@ int a2write(char *fileName, void *data, int length) {
     }
 
     // Update file size for file
-    _updateFilesize(cwdAddress, cwdLength, nameBuffer, 'F', file.filesize+length);
+    _updateFilesize(cwdAddress, cwdLength, nameBuffer, 'F', file.filesize + length);
 
     return 0;
 }
@@ -1162,7 +1152,7 @@ int a2read(char *fileName, void *data, int length) {
         return -1;
     }
 
-    // Save file pointer 
+    // Save file pointer
     if (offset == 0) {
         struct FilePointer fp;
         fp.startBlockIdx = fileMetadata.startBlockIdx;
@@ -1190,8 +1180,6 @@ int a2read(char *fileName, void *data, int length) {
  * Returns 0 if no problem or -1 if the call failed.
  */
 int seek(char *fileName, int location) {
-
-
 
     unsigned char nameBuffer[8] = {'\0'};
     int cwdAddress = root_block_idx;
@@ -1226,5 +1214,3 @@ int seek(char *fileName, int location) {
 
     return -1;
 }
-
-
